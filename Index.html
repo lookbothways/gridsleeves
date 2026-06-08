@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Grid Drone</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@100;300;400&display=swap" rel="stylesheet">
+<style>
+  :root{ --ink:#111; --line:#e2e2e2; --bg:#fff; }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body{ margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Roboto",system-ui,sans-serif; font-weight:300; }
+  body{ min-height:100vh; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; padding:40px 22px; text-align:center; }
+  h1{ font-weight:100; font-size:1.5rem; letter-spacing:.04em; margin:0 0 6px; }
+  .tag{ font-size:.78rem; color:#777; margin:0 0 40px; max-width:340px; line-height:1.5; }
+
+  .play{ width:150px; height:150px; border-radius:50%; cursor:pointer;
+    background:#fff; color:var(--ink); border:1px solid var(--ink);
+    font:inherit; font-weight:100; font-size:1.35rem; letter-spacing:.06em;
+    transition:background .3s ease, color .3s ease, transform .12s ease; }
+  .play:active{ transform:scale(.97); }
+  .play.on{ background:var(--ink); color:#fff; }
+
+  .dots{ display:flex; gap:11px; margin-top:42px; height:18px; align-items:center; }
+  .dots .d{ width:11px; height:11px; border-radius:50%;
+    transform:scale(.5); opacity:.2; transition:none; }
+
+  .clock{ margin-top:38px; font-weight:100; }
+  .clock .t{ font-size:1.1rem; font-variant-numeric:tabular-nums; letter-spacing:.03em; }
+  .clock .l{ font-size:.68rem; color:#aaa; text-transform:uppercase; letter-spacing:.14em; margin-top:3px; }
+  .status{ margin-top:26px; font-size:.74rem; color:#999; max-width:340px; line-height:1.5; min-height:1.2em; }
+  .status.err{ color:#b3261e; }
+</style>
+</head>
+<body>
+  <h1>GRID DRONE</h1>
+  <p class="tag">A live drone of Great Britain's electricity, retuned every half hour. Greener grid, calmer chord.</p>
+
+  <button class="play" id="play">Play</button>
+
+  <div class="dots" id="dots"></div>
+
+  <div class="clock">
+    <div class="t" id="countdown">--:--</div>
+    <div class="l">until retune</div>
+  </div>
+
+  <p class="status" id="status">&nbsp;</p>
+
+<script>
+/* =====================================================================
+   INSTRUMENTS  (pitch = C major pentatonic spread; any subset stays consonant)
+   ===================================================================== */
+const INSTRUMENTS = [
+  { id:'nuclear', name:'Nuclear', freq:65.41,  wave:'triangle', cutoff:6, vibRate:4.2, vibDepth:5, trim:0.52, color:'#9b59b6' },
+  { id:'coal',    name:'Coal',    freq:98.00,  wave:'sawtooth', cutoff:4, vibRate:3.8, vibDepth:5, trim:0.42, color:'#5b3a29' },
+  { id:'hydro',   name:'Hydro',   freq:130.81, wave:'triangle', cutoff:6, vibRate:4.6, vibDepth:6, trim:0.50, color:'#2d6fd6' },
+  { id:'biomass', name:'Biomass', freq:164.81, wave:'triangle', cutoff:7, vibRate:4.4, vibDepth:6, trim:0.46, color:'#9b2d2d' },
+  { id:'wind',    name:'Wind',    freq:196.00, wave:'sawtooth', cutoff:6, vibRate:5.4, vibDepth:9, trim:0.40, color:'#19c4d4' },
+  { id:'solar',   name:'Solar',   freq:220.00, wave:'sawtooth', cutoff:8, vibRate:5.0, vibDepth:8, trim:0.36, color:'#f2c200' },
+  { id:'gas',     name:'Gas',     freq:293.66, wave:'sawtooth', cutoff:7, vibRate:5.2, vibDepth:7, trim:0.32, color:'#f5a623' },
+];
+const FUEL_MAP = { gas:'gas', coal:'coal', nuclear:'nuclear', biomass:'biomass', hydro:'hydro', solar:'solar', wind:'wind' };
+
+const API = 'https://api.carbonintensity.org.uk';
+const WINDOW_HOURS = 3;
+const LOOP_MS = 30 * 60 * 1000;     // retune cadence (matches the data's 30-min resolution)
+const GAIN_EXP = 0.8;               // share% -> amplitude curve (slight lift for low shares)
+const ampFromPct = pct => Math.pow(Math.max(pct,0)/100, GAIN_EXP);
+
+/* =====================================================================
+   AUDIO ENGINE
+   ===================================================================== */
+let ctx, master, wet, dry, reverb;
+function initAudio(){
+  if(ctx) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  master = ctx.createGain(); master.gain.value = 0.68;   // -20% headroom
+  dry = ctx.createGain();    dry.gain.value = 0.82;
+  wet = ctx.createGain();    wet.gain.value = 0.38;
+  reverb = ctx.createConvolver(); reverb.buffer = makeImpulse(2.8, 2.4);
+  master.connect(dry).connect(ctx.destination);
+  master.connect(reverb).connect(wet).connect(ctx.destination);
+}
+function makeImpulse(sec, decay){
+  const rate = ctx.sampleRate, len = Math.floor(rate*sec), buf = ctx.createBuffer(2, len, rate);
+  for(let c=0;c<2;c++){ const d=buf.getChannelData(c);
+    for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len, decay); }
+  return buf;
+}
+
+/* Common voice interface: start(), setAmplitude(0..1, continuous), stop() */
+class SynthVoice{
+  constructor(I){ this.I = I; this.playing = false; }
+  start(){
+    if(this.playing) return; this.playing = true;
+    const I = this.I;
+    this.g = ctx.createGain(); this.g.gain.value = 0;
+    this.flt = ctx.createBiquadFilter(); this.flt.type='lowpass';
+    this.flt.frequency.value = I.freq*I.cutoff; this.flt.Q.value = 0.6;
+    this.flt.connect(this.g).connect(master);
+    this.oscs = [];
+    [-6,0,6].forEach(det => { const o=ctx.createOscillator();
+      o.type=I.wave; o.frequency.value=I.freq; o.detune.value=det;
+      o.connect(this.flt); o.start(); this.oscs.push(o); });
+    this.lfo = ctx.createOscillator(); this.lfo.frequency.value=I.vibRate;
+    this.lfoG = ctx.createGain(); this.lfoG.gain.value=I.vibDepth;
+    this.lfo.connect(this.lfoG); this.oscs.forEach(o=>this.lfoG.connect(o.detune)); this.lfo.start();
+  }
+  setAmplitude(a){ if(this.playing) this.g.gain.setTargetAtTime(a*this.I.trim, ctx.currentTime, 0.08); }
+  stop(){
+    if(!this.playing) return; this.playing=false;
+    const t=ctx.currentTime;
+    this.g.gain.cancelScheduledValues(t);
+    this.g.gain.setValueAtTime(this.g.gain.value,t);
+    this.g.gain.linearRampToValueAtTime(0,t+0.9);
+    const oscs=this.oscs, lfo=this.lfo;
+    setTimeout(()=>{ oscs.forEach(o=>{try{o.stop()}catch(e){}}); try{lfo.stop()}catch(e){} }, 1000);
+  }
+}
+/* Future drop-in for looping MP3s — same interface */
+class SampleVoice{
+  constructor(I){ this.I=I; this.playing=false; this.buffer=null; }
+  async _load(){ if(this.buffer) return; const r=await fetch(this.I.sampleUrl); this.buffer=await ctx.decodeAudioData(await r.arrayBuffer()); }
+  async start(){ if(this.playing) return; this.playing=true; await this._load(); if(!this.playing) return;
+    this.g=ctx.createGain(); this.g.gain.value=0; this.g.connect(master);
+    this.src=ctx.createBufferSource(); this.src.buffer=this.buffer; this.src.loop=true; this.src.connect(this.g); this.src.start(); }
+  setAmplitude(a){ if(this.playing&&this.g) this.g.gain.setTargetAtTime(a*(this.I.trim??1), ctx.currentTime, 0.08); }
+  stop(){ if(!this.playing) return; this.playing=false; if(!this.g) return;
+    const t=ctx.currentTime; this.g.gain.cancelScheduledValues(t); this.g.gain.setValueAtTime(this.g.gain.value,t);
+    this.g.gain.linearRampToValueAtTime(0,t+0.9); const src=this.src; setTimeout(()=>{try{src.stop()}catch(e){}},1000); }
+}
+const createVoice = I => I.sampleUrl ? new SampleVoice(I) : new SynthVoice(I);
+
+/* =====================================================================
+   DATA
+   ===================================================================== */
+let DATA = { curves:{}, points:0 };
+let fetching = false;
+const isoMin = d => d.toISOString().slice(0,16)+'Z';
+
+async function fetchData(){
+  if(fetching) return false; fetching = true;
+  try{
+    const now = new Date(), from = new Date(now.getTime()-WINDOW_HOURS*3600*1000);
+    const res = await fetch(`${API}/generation/${isoMin(from)}/${isoMin(now)}`, { headers:{Accept:'application/json'} });
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const rows = (await res.json()).data || [];
+    if(!rows.length) throw new Error('no data');
+    const curves = {}; INSTRUMENTS.forEach(I=>curves[I.id]=[]);
+    rows.forEach(r => { const b={}; (r.generationmix||[]).forEach(g=>{ if(FUEL_MAP[g.fuel]) b[FUEL_MAP[g.fuel]]=g.perc; });
+      INSTRUMENTS.forEach(I=>curves[I.id].push(b[I.id]??0)); });
+    DATA = { curves, points: rows.length };
+    setStatus('');
+    return true;
+  }catch(e){ setStatus('Data unavailable: '+e.message, true); return false; }
+  finally{ fetching = false; }
+}
+function amplitudeAt(id, p){
+  const a = DATA.curves[id]; if(!a||!a.length) return 0; if(a.length===1) return a[0];
+  const x=p*(a.length-1), i=Math.min(Math.floor(x),a.length-2), f=x-i;
+  const m=(1-Math.cos(f*Math.PI))/2;
+  return a[i]*(1-m)+a[i+1]*m;
+}
+
+/* =====================================================================
+   PLAYBACK + CLOCK
+   ===================================================================== */
+const voices = {};
+let playing=false, loopStart=0;
+
+const dotsEl = document.getElementById('dots');
+const dotEls = {};
+INSTRUMENTS.forEach(I=>{ const d=document.createElement('span'); d.className='d'; d.style.background=I.color; dotsEl.appendChild(d); dotEls[I.id]=d; });
+
+function setStatus(m,err=false){ const s=document.getElementById('status'); s.innerHTML=m||'&nbsp;'; s.classList.toggle('err',err); }
+
+async function play(){
+  initAudio(); if(ctx.state==='suspended') await ctx.resume();
+  if(!DATA.points){ setStatus('Connecting to the grid…'); const ok=await fetchData(); if(!ok) return; }
+  INSTRUMENTS.forEach(I=>{ const v=createVoice(I); voices[I.id]=v; v.start(); });
+  playing=true; loopStart=performance.now();
+  document.getElementById('play').classList.add('on');
+  document.getElementById('play').textContent='Pause';
+}
+function stop(){
+  playing=false;
+  Object.values(voices).forEach(v=>v.stop()); for(const k in voices) delete voices[k];
+  INSTRUMENTS.forEach(I=>{ const d=dotEls[I.id]; d.style.transform='scale(.5)'; d.style.opacity='.2'; });
+  document.getElementById('play').classList.remove('on');
+  document.getElementById('play').textContent='Play';
+}
+document.getElementById('play').addEventListener('click', ()=> playing ? stop() : play());
+
+function frame(){
+  if(playing){
+    const elapsed = performance.now()-loopStart;
+    let p = elapsed/LOOP_MS;
+    if(p>=1){ p=1; if(!fetching) fetchData().then(()=>{ loopStart=performance.now(); }); }
+    INSTRUMENTS.forEach(I=>{
+      const pct = amplitudeAt(I.id, Math.min(p,1));
+      const amp = ampFromPct(pct);
+      if(voices[I.id]) voices[I.id].setAmplitude(amp);
+      const d = dotEls[I.id]; d.style.transform='scale('+(0.5+amp*0.9)+')'; d.style.opacity=(0.2+amp*0.8);
+    });
+    const remain = Math.max(0, LOOP_MS-elapsed), s = Math.ceil(remain/1000);
+    document.getElementById('countdown').textContent =
+      String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+  }
+  requestAnimationFrame(frame);
+}
+
+fetchData();                       // warm the data so Play is instant
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
