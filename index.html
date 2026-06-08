@@ -6,54 +6,54 @@
 <title>Grid Drone</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@100;300;400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@100;300;400;500&display=swap" rel="stylesheet">
 <style>
-  :root{ --ink:#111; --line:#e2e2e2; --bg:#fff; }
+  :root{ --ink:#111; --bg:#fff; }
   *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body{ margin:0; background:var(--bg); color:var(--ink);
     font-family:"Roboto",system-ui,sans-serif; font-weight:300; }
   body{ min-height:100vh; display:flex; flex-direction:column; align-items:center;
-    justify-content:center; padding:40px 22px; text-align:center; }
-  h1{ font-weight:100; font-size:1.5rem; letter-spacing:.04em; margin:0 0 6px; }
-  .tag{ font-size:.78rem; color:#777; margin:0 0 40px; max-width:340px; line-height:1.5; }
+    justify-content:space-between; padding:30px 18px; }
 
-  .play{ width:150px; height:150px; border-radius:50%; cursor:pointer;
-    background:#fff; color:var(--ink); border:1px solid var(--ink);
-    font:inherit; font-weight:100; font-size:1.35rem; letter-spacing:.06em;
-    transition:background .3s ease, color .3s ease, transform .12s ease; }
-  .play:active{ transform:scale(.97); }
-  .play.on{ background:var(--ink); color:#fff; }
+  .top{ height:18px; }
+  .countdown{ font-size:.72rem; color:#bdbdbd; text-transform:uppercase; letter-spacing:.16em;
+    font-weight:300; font-variant-numeric:tabular-nums; }
 
-  .dots{ display:flex; gap:11px; margin-top:42px; height:18px; align-items:center; }
-  .dots .d{ width:11px; height:11px; border-radius:50%;
-    transform:scale(.5); opacity:.2; transition:none; }
+  .mid{ flex:1 1 auto; display:flex; align-items:center; justify-content:center; width:100%; }
+  svg{ width:100%; max-width:380px; height:auto; display:block; }
+  .seg{ stroke:#fff; stroke-width:2.5; cursor:pointer; transition:opacity .35s ease; }
+  .lbl{ pointer-events:none; fill:#fff; font-family:"Roboto",sans-serif;
+    paint-order:stroke; stroke:rgba(0,0,0,.22); stroke-width:.6px; }
+  .lbl .nm{ font-weight:400; font-size:13px; }
+  .lbl .pc{ font-weight:300; font-size:11px; }
+  .center-hit{ fill:#fff; cursor:pointer; }
+  .center-txt{ pointer-events:none; fill:var(--ink); font-weight:300; font-size:15px;
+    letter-spacing:.05em; text-anchor:middle; }
 
-  .clock{ margin-top:38px; font-weight:100; }
-  .clock .t{ font-size:1.1rem; font-variant-numeric:tabular-nums; letter-spacing:.03em; }
-  .clock .l{ font-size:.68rem; color:#aaa; text-transform:uppercase; letter-spacing:.14em; margin-top:3px; }
-  .status{ margin-top:26px; font-size:.74rem; color:#999; max-width:340px; line-height:1.5; min-height:1.2em; }
-  .status.err{ color:#b3261e; }
+  .bottom{ width:240px; }
+  .bottom input[type=range]{ width:100%; accent-color:rgba(0,0,0,.5); }
+  .err{ margin-top:12px; font-size:.7rem; color:#b3261e; text-align:center; min-height:1em; }
 </style>
 </head>
 <body>
-  <h1>GRID DRONE</h1>
-  <p class="tag">A live drone of Great Britain's electricity, retuned every half hour. Greener grid, calmer chord.</p>
+  <div class="top"><span class="countdown" id="countdown">updating in 00:10</span></div>
 
-  <button class="play" id="play">Play</button>
-
-  <div class="dots" id="dots"></div>
-
-  <div class="clock">
-    <div class="t" id="countdown">--:--</div>
-    <div class="l">until retune</div>
+  <div class="mid">
+    <svg id="donut" viewBox="0 0 360 360" aria-label="Energy mix">
+      <g id="segs"></g>
+      <g id="labels"></g>
+      <circle class="center-hit" id="centerHit" cx="180" cy="180" r="86"></circle>
+      <text class="center-txt" id="centerTxt" x="180" y="185">Play</text>
+    </svg>
   </div>
 
-  <p class="status" id="status">&nbsp;</p>
+  <div class="bottom">
+    <input type="range" id="loop" min="0" max="1000" value="0">
+    <div class="err" id="err"></div>
+  </div>
 
 <script>
-/* =====================================================================
-   INSTRUMENTS  (pitch = C major pentatonic spread; any subset stays consonant)
-   ===================================================================== */
+/* ===================== instruments (C major pentatonic) ===================== */
 const INSTRUMENTS = [
   { id:'nuclear', name:'Nuclear', freq:65.41,  wave:'triangle', cutoff:6, vibRate:4.2, vibDepth:5, trim:0.52, color:'#9b59b6' },
   { id:'coal',    name:'Coal',    freq:98.00,  wave:'sawtooth', cutoff:4, vibRate:3.8, vibDepth:5, trim:0.42, color:'#5b3a29' },
@@ -64,64 +64,56 @@ const INSTRUMENTS = [
   { id:'gas',     name:'Gas',     freq:293.66, wave:'sawtooth', cutoff:7, vibRate:5.2, vibDepth:7, trim:0.32, color:'#f5a623' },
 ];
 const FUEL_MAP = { gas:'gas', coal:'coal', nuclear:'nuclear', biomass:'biomass', hydro:'hydro', solar:'solar', wind:'wind' };
-
 const API = 'https://api.carbonintensity.org.uk';
 const WINDOW_HOURS = 3;
-const LOOP_MS = 30 * 60 * 1000;     // retune cadence (matches the data's 30-min resolution)
-const GAIN_EXP = 0.8;               // share% -> amplitude curve (slight lift for low shares)
-const ampFromPct = pct => Math.pow(Math.max(pct,0)/100, GAIN_EXP);
+const GAIN_EXP = 0.8;
+const ampFromPct = p => Math.pow(Math.max(p,0)/100, GAIN_EXP);
 
-/* =====================================================================
-   AUDIO ENGINE
-   ===================================================================== */
+const MODES = {
+  live:  { loopMs: 10000,  label:null         },   // loopMs overridden by slider sub-position
+  today: { loopMs: 30000,  label:'today'      },
+  week:  { loopMs: 60000,  label:'this week'  },
+  year:  { loopMs: 300000, label:'1 year'     },
+};
+let mode='live', loopMs=10000, loading=false;
+
+/* ===================== audio ===================== */
 let ctx, master, wet, dry, reverb;
 function initAudio(){
   if(ctx) return;
-  ctx = new (window.AudioContext || window.webkitAudioContext)();
-  master = ctx.createGain(); master.gain.value = 0.68;   // -20% headroom
-  dry = ctx.createGain();    dry.gain.value = 0.82;
-  wet = ctx.createGain();    wet.gain.value = 0.38;
+  ctx = new (window.AudioContext||window.webkitAudioContext)();
+  master = ctx.createGain(); master.gain.value = 0.68;
+  dry = ctx.createGain(); dry.gain.value = 0.82;
+  wet = ctx.createGain(); wet.gain.value = 0.38;
   reverb = ctx.createConvolver(); reverb.buffer = makeImpulse(2.8, 2.4);
   master.connect(dry).connect(ctx.destination);
   master.connect(reverb).connect(wet).connect(ctx.destination);
 }
-function makeImpulse(sec, decay){
-  const rate = ctx.sampleRate, len = Math.floor(rate*sec), buf = ctx.createBuffer(2, len, rate);
+function makeImpulse(sec,decay){
+  const rate=ctx.sampleRate, len=Math.floor(rate*sec), buf=ctx.createBuffer(2,len,rate);
   for(let c=0;c<2;c++){ const d=buf.getChannelData(c);
-    for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len, decay); }
+    for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,decay); }
   return buf;
 }
-
-/* Common voice interface: start(), setAmplitude(0..1, continuous), stop() */
 class SynthVoice{
-  constructor(I){ this.I = I; this.playing = false; }
-  start(){
-    if(this.playing) return; this.playing = true;
-    const I = this.I;
-    this.g = ctx.createGain(); this.g.gain.value = 0;
-    this.flt = ctx.createBiquadFilter(); this.flt.type='lowpass';
-    this.flt.frequency.value = I.freq*I.cutoff; this.flt.Q.value = 0.6;
+  constructor(I){ this.I=I; this.playing=false; }
+  start(){ if(this.playing) return; this.playing=true; const I=this.I;
+    this.g=ctx.createGain(); this.g.gain.value=0;
+    this.flt=ctx.createBiquadFilter(); this.flt.type='lowpass';
+    this.flt.frequency.value=I.freq*I.cutoff; this.flt.Q.value=0.6;
     this.flt.connect(this.g).connect(master);
-    this.oscs = [];
-    [-6,0,6].forEach(det => { const o=ctx.createOscillator();
-      o.type=I.wave; o.frequency.value=I.freq; o.detune.value=det;
-      o.connect(this.flt); o.start(); this.oscs.push(o); });
-    this.lfo = ctx.createOscillator(); this.lfo.frequency.value=I.vibRate;
-    this.lfoG = ctx.createGain(); this.lfoG.gain.value=I.vibDepth;
-    this.lfo.connect(this.lfoG); this.oscs.forEach(o=>this.lfoG.connect(o.detune)); this.lfo.start();
-  }
+    this.oscs=[]; [-6,0,6].forEach(det=>{ const o=ctx.createOscillator();
+      o.type=I.wave; o.frequency.value=I.freq; o.detune.value=det; o.connect(this.flt); o.start(); this.oscs.push(o); });
+    this.lfo=ctx.createOscillator(); this.lfo.frequency.value=I.vibRate;
+    this.lfoG=ctx.createGain(); this.lfoG.gain.value=I.vibDepth;
+    this.lfo.connect(this.lfoG); this.oscs.forEach(o=>this.lfoG.connect(o.detune)); this.lfo.start(); }
   setAmplitude(a){ if(this.playing) this.g.gain.setTargetAtTime(a*this.I.trim, ctx.currentTime, 0.08); }
-  stop(){
-    if(!this.playing) return; this.playing=false;
-    const t=ctx.currentTime;
-    this.g.gain.cancelScheduledValues(t);
-    this.g.gain.setValueAtTime(this.g.gain.value,t);
+  stop(){ if(!this.playing) return; this.playing=false; const t=ctx.currentTime;
+    this.g.gain.cancelScheduledValues(t); this.g.gain.setValueAtTime(this.g.gain.value,t);
     this.g.gain.linearRampToValueAtTime(0,t+0.9);
     const oscs=this.oscs, lfo=this.lfo;
-    setTimeout(()=>{ oscs.forEach(o=>{try{o.stop()}catch(e){}}); try{lfo.stop()}catch(e){} }, 1000);
-  }
+    setTimeout(()=>{ oscs.forEach(o=>{try{o.stop()}catch(e){}}); try{lfo.stop()}catch(e){} },1000); }
 }
-/* Future drop-in for looping MP3s — same interface */
 class SampleVoice{
   constructor(I){ this.I=I; this.playing=false; this.buffer=null; }
   async _load(){ if(this.buffer) return; const r=await fetch(this.I.sampleUrl); this.buffer=await ctx.decodeAudioData(await r.arrayBuffer()); }
@@ -129,91 +121,190 @@ class SampleVoice{
     this.g=ctx.createGain(); this.g.gain.value=0; this.g.connect(master);
     this.src=ctx.createBufferSource(); this.src.buffer=this.buffer; this.src.loop=true; this.src.connect(this.g); this.src.start(); }
   setAmplitude(a){ if(this.playing&&this.g) this.g.gain.setTargetAtTime(a*(this.I.trim??1), ctx.currentTime, 0.08); }
-  stop(){ if(!this.playing) return; this.playing=false; if(!this.g) return;
-    const t=ctx.currentTime; this.g.gain.cancelScheduledValues(t); this.g.gain.setValueAtTime(this.g.gain.value,t);
+  stop(){ if(!this.playing) return; this.playing=false; if(!this.g) return; const t=ctx.currentTime;
+    this.g.gain.cancelScheduledValues(t); this.g.gain.setValueAtTime(this.g.gain.value,t);
     this.g.gain.linearRampToValueAtTime(0,t+0.9); const src=this.src; setTimeout(()=>{try{src.stop()}catch(e){}},1000); }
 }
 const createVoice = I => I.sampleUrl ? new SampleVoice(I) : new SynthVoice(I);
 
-/* =====================================================================
-   DATA
-   ===================================================================== */
+/* ===================== data ===================== */
 let DATA = { curves:{}, points:0 };
-let fetching = false;
 const isoMin = d => d.toISOString().slice(0,16)+'Z';
+function setErr(m){ document.getElementById('err').textContent = m||''; }
 
-async function fetchData(){
-  if(fetching) return false; fetching = true;
+async function fetchGenRange(fromDate,toDate){
+  const res=await fetch(`${API}/generation/${isoMin(fromDate)}/${isoMin(toDate)}`,{headers:{Accept:'application/json'}});
+  if(!res.ok) throw new Error('HTTP '+res.status);
+  return (await res.json()).data||[];
+}
+function rowsToCurves(rows){
+  const c={}; INSTRUMENTS.forEach(I=>c[I.id]=[]);
+  rows.forEach(r=>{ const b={}; (r.generationmix||[]).forEach(g=>{ if(FUEL_MAP[g.fuel]) b[FUEL_MAP[g.fuel]]=g.perc; });
+    INSTRUMENTS.forEach(I=>c[I.id].push(b[I.id]??0)); });
+  return c;
+}
+function downsample(curves,maxN){
+  const ids=Object.keys(curves), n=curves[ids[0]]?.length||0; if(n<=maxN) return curves;
+  const out={}; ids.forEach(id=>out[id]=[]); const step=n/maxN;
+  for(let k=0;k<maxN;k++){ const a=Math.floor(k*step), b=Math.max(a+1,Math.floor((k+1)*step));
+    ids.forEach(id=>{ let s=0,c=0; for(let j=a;j<b;j++){ s+=curves[id][j]; c++; } out[id].push(c?s/c:0); }); }
+  return out;
+}
+async function fetchYear(){
+  const now=new Date(), tasks=[];
+  for(let m=11;m>=0;m--){
+    const d=new Date(now.getFullYear(), now.getMonth()-m, 1, 12, 0);
+    const end=new Date(d.getTime()+24*3600*1000);
+    tasks.push(fetchGenRange(d,end).then(rows=>{
+      const c=rowsToCurves(rows), pt={};
+      INSTRUMENTS.forEach(I=>{ const arr=c[I.id]; pt[I.id]=arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0; });
+      return pt;
+    }));
+  }
+  const pts=await Promise.all(tasks);
+  const curves={}; INSTRUMENTS.forEach(I=>curves[I.id]=[]);
+  pts.forEach(p=>INSTRUMENTS.forEach(I=>curves[I.id].push(p[I.id])));
+  return curves;
+}
+function amplitudeAt(id,p){ const a=DATA.curves[id]; if(!a||!a.length) return 0; if(a.length===1) return a[0];
+  const x=p*(a.length-1), i=Math.min(Math.floor(x),a.length-2), f=x-i, m=(1-Math.cos(f*Math.PI))/2;
+  return a[i]*(1-m)+a[i+1]*m; }
+
+/* fetch by mode -------------------------------------------------- */
+let switchToken=0;
+async function loadMode(m){
+  const tok=++switchToken; mode=m; loading=true; setErr('');
   try{
-    const now = new Date(), from = new Date(now.getTime()-WINDOW_HOURS*3600*1000);
-    const res = await fetch(`${API}/generation/${isoMin(from)}/${isoMin(now)}`, { headers:{Accept:'application/json'} });
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const rows = (await res.json()).data || [];
-    if(!rows.length) throw new Error('no data');
-    const curves = {}; INSTRUMENTS.forEach(I=>curves[I.id]=[]);
-    rows.forEach(r => { const b={}; (r.generationmix||[]).forEach(g=>{ if(FUEL_MAP[g.fuel]) b[FUEL_MAP[g.fuel]]=g.perc; });
-      INSTRUMENTS.forEach(I=>curves[I.id].push(b[I.id]??0)); });
-    DATA = { curves, points: rows.length };
-    setStatus('');
-    return true;
-  }catch(e){ setStatus('Data unavailable: '+e.message, true); return false; }
-  finally{ fetching = false; }
+    if(m==='live'){
+      const now=new Date(), from=new Date(now.getTime()-WINDOW_HOURS*3600*1000);
+      const rows=await fetchGenRange(from,now); if(tok!==switchToken) return;
+      DATA={curves:rowsToCurves(rows), points:rows.length};
+    } else if(m==='today'){
+      loopMs=MODES.today.loopMs; const now=new Date(), mid=new Date(now); mid.setHours(0,0,0,0);
+      const rows=await fetchGenRange(mid,now); if(tok!==switchToken) return;
+      DATA={curves:downsample(rowsToCurves(rows),240), points:rows.length};
+    } else if(m==='week'){
+      loopMs=MODES.week.loopMs; const now=new Date(), from=new Date(now.getTime()-7*864e5);
+      const rows=await fetchGenRange(from,now); if(tok!==switchToken) return;
+      DATA={curves:downsample(rowsToCurves(rows),240), points:rows.length};
+    } else if(m==='year'){
+      loopMs=MODES.year.loopMs; const curves=await fetchYear(); if(tok!==switchToken) return;
+      DATA={curves, points:12};
+    }
+    progress=0; loopStart=performance.now();
+  }catch(e){ if(tok===switchToken) setErr('Could not load "'+(MODES[m].label||'live')+'": '+e.message); }
+  finally{ if(tok===switchToken) loading=false; }
 }
-function amplitudeAt(id, p){
-  const a = DATA.curves[id]; if(!a||!a.length) return 0; if(a.length===1) return a[0];
-  const x=p*(a.length-1), i=Math.min(Math.floor(x),a.length-2), f=x-i;
-  const m=(1-Math.cos(f*Math.PI))/2;
-  return a[i]*(1-m)+a[i+1]*m;
+
+/* ===================== donut geometry ===================== */
+const CX=180, CY=180, R_OUT=150, R_IN=88, R_MID=(R_OUT+R_IN)/2;
+const pt=(r,a)=>[CX+r*Math.sin(a), CY-r*Math.cos(a)];
+function annular(a0,a1){
+  if(a1-a0 >= Math.PI*2-1e-4){
+    return `M${CX},${CY-R_OUT} A${R_OUT},${R_OUT} 0 1 1 ${CX-0.01},${CY-R_OUT} Z `+
+           `M${CX},${CY-R_IN} A${R_IN},${R_IN} 0 1 0 ${CX-0.01},${CY-R_IN} Z`;
+  }
+  const large=(a1-a0)>Math.PI?1:0;
+  const [x0,y0]=pt(R_OUT,a0),[x1,y1]=pt(R_OUT,a1),[x2,y2]=pt(R_IN,a1),[x3,y3]=pt(R_IN,a0);
+  return `M${x0},${y0} A${R_OUT},${R_OUT} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${R_IN},${R_IN} 0 ${large} 0 ${x3},${y3} Z`;
 }
+const SVGNS='http://www.w3.org/2000/svg';
+const segG=document.getElementById('segs'), lblG=document.getElementById('labels');
+const segEl={}, lblEl={};
+INSTRUMENTS.forEach(I=>{
+  const p=document.createElementNS(SVGNS,'path'); p.setAttribute('class','seg'); p.setAttribute('fill',I.color);
+  p.addEventListener('click',()=>toggleSolo(I.id)); segG.appendChild(p); segEl[I.id]=p;
+  const t=document.createElementNS(SVGNS,'text'); t.setAttribute('class','lbl'); t.setAttribute('text-anchor','middle');
+  const nm=document.createElementNS(SVGNS,'tspan'); nm.setAttribute('class','nm'); nm.textContent=I.name;
+  const pc=document.createElementNS(SVGNS,'tspan'); pc.setAttribute('class','pc');
+  t.appendChild(nm); t.appendChild(pc); lblG.appendChild(t); lblEl[I.id]={t,nm,pc};
+});
 
-/* =====================================================================
-   PLAYBACK + CLOCK
-   ===================================================================== */
-const voices = {};
-let playing=false, loopStart=0;
-
-const dotsEl = document.getElementById('dots');
-const dotEls = {};
-INSTRUMENTS.forEach(I=>{ const d=document.createElement('span'); d.className='d'; d.style.background=I.color; dotsEl.appendChild(d); dotEls[I.id]=d; });
-
-function setStatus(m,err=false){ const s=document.getElementById('status'); s.innerHTML=m||'&nbsp;'; s.classList.toggle('err',err); }
+/* ===================== playback + render ===================== */
+const voices={};
+let playing=false, soloId=null, loopStart=0, progress=0;
+const centerTxt=document.getElementById('centerTxt'), countdownEl=document.getElementById('countdown');
+const fmtClock = s => String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
 
 async function play(){
   initAudio(); if(ctx.state==='suspended') await ctx.resume();
-  if(!DATA.points){ setStatus('Connecting to the grid…'); const ok=await fetchData(); if(!ok) return; }
+  if(!DATA.points){ await loadMode(mode); if(!DATA.points) return; }
+  soloId=null;
   INSTRUMENTS.forEach(I=>{ const v=createVoice(I); voices[I.id]=v; v.start(); });
-  playing=true; loopStart=performance.now();
-  document.getElementById('play').classList.add('on');
-  document.getElementById('play').textContent='Pause';
+  playing=true; loopStart=performance.now()-progress*loopMs;
+  centerTxt.textContent='Pause';
 }
 function stop(){
-  playing=false;
+  playing=false; soloId=null;
   Object.values(voices).forEach(v=>v.stop()); for(const k in voices) delete voices[k];
-  INSTRUMENTS.forEach(I=>{ const d=dotEls[I.id]; d.style.transform='scale(.5)'; d.style.opacity='.2'; });
-  document.getElementById('play').classList.remove('on');
-  document.getElementById('play').textContent='Play';
+  centerTxt.textContent='Play';
 }
-document.getElementById('play').addEventListener('click', ()=> playing ? stop() : play());
+function togglePlay(){ playing ? stop() : play(); }
+async function toggleSolo(id){
+  if(!playing){ await play(); soloId=id; return; }
+  soloId = (soloId===id) ? null : id;
+}
+document.getElementById('centerHit').addEventListener('click', togglePlay);
 
+function render(){
+  const pcts={}; let total=0;
+  INSTRUMENTS.forEach(I=>{ const v=amplitudeAt(I.id, Math.min(progress,1)); pcts[I.id]=v; total+=v; });
+  if(total<=0) total=1;
+  let ang=0;
+  INSTRUMENTS.forEach(I=>{
+    const frac=pcts[I.id]/total, a0=ang, a1=ang+frac*Math.PI*2; ang=a1;
+    segEl[I.id].setAttribute('d', frac>0 ? annular(a0,a1) : '');
+    segEl[I.id].style.opacity = (soloId && soloId!==I.id) ? 0.5 : 1;
+    const mid=(a0+a1)/2, [lx,ly]=pt(R_MID,mid), L=lblEl[I.id];
+    const show = frac>0.045 && pcts[I.id]>=0.5;
+    L.t.style.display = show ? '' : 'none';
+    if(show){
+      L.t.setAttribute('x',lx); L.t.setAttribute('y',ly);
+      L.nm.setAttribute('x',lx); L.nm.setAttribute('dy','-2');
+      L.pc.setAttribute('x',lx); L.pc.setAttribute('dy','15'); L.pc.textContent=Math.round(pcts[I.id])+'%';
+    }
+  });
+}
+function topText(){
+  if(mode==='live'){
+    if(playing){ const remain=Math.max(0,loopMs-(performance.now()-loopStart)); countdownEl.textContent='updating in '+fmtClock(Math.ceil(remain/1000)); }
+    else countdownEl.textContent='updating in '+fmtClock(Math.round(loopMs/1000));
+  } else countdownEl.textContent = loading ? MODES[mode].label+' …' : MODES[mode].label;
+}
 function frame(){
   if(playing){
-    const elapsed = performance.now()-loopStart;
-    let p = elapsed/LOOP_MS;
-    if(p>=1){ p=1; if(!fetching) fetchData().then(()=>{ loopStart=performance.now(); }); }
+    progress=(performance.now()-loopStart)/loopMs;
+    if(progress>=1){ progress=1;
+      if(mode==='live'){ if(!loading) loadMode('live').then(()=>{ loopStart=performance.now(); progress=0; }); }
+      else { loopStart=performance.now(); progress=0; }   // loop the historical tune
+    }
     INSTRUMENTS.forEach(I=>{
-      const pct = amplitudeAt(I.id, Math.min(p,1));
-      const amp = ampFromPct(pct);
-      if(voices[I.id]) voices[I.id].setAmplitude(amp);
-      const d = dotEls[I.id]; d.style.transform='scale('+(0.5+amp*0.9)+')'; d.style.opacity=(0.2+amp*0.8);
+      const amp=ampFromPct(amplitudeAt(I.id, Math.min(progress,1)));
+      const target=(soloId && soloId!==I.id) ? 0 : amp;
+      if(voices[I.id]) voices[I.id].setAmplitude(target);
     });
-    const remain = Math.max(0, LOOP_MS-elapsed), s = Math.ceil(remain/1000);
-    document.getElementById('countdown').textContent =
-      String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
   }
+  topText(); render();
   requestAnimationFrame(frame);
 }
 
-fetchData();                       // warm the data so Play is instant
+/* ===================== slider (4 zones) ===================== */
+const loopSlider=document.getElementById('loop');
+const liveLoopMs = sub => Math.round(10*Math.pow(90, sub))*1000;   // sub 0..1 -> 10s..900s (15min)
+loopSlider.addEventListener('input',()=>{
+  const v=+loopSlider.value;
+  const newMode = v<250?'live' : v<500?'today' : v<750?'week' : 'year';
+  if(newMode==='live'){
+    if(mode!=='live') loadMode('live');
+    const now=performance.now(), oldP=playing?Math.min((now-loopStart)/loopMs,1):0;
+    loopMs=liveLoopMs(v/250); if(playing) loopStart=now-oldP*loopMs;
+  } else if(newMode!==mode){
+    loadMode(newMode);
+  }
+});
+
+/* go */
+loadMode('live');
 requestAnimationFrame(frame);
 </script>
 </body>
