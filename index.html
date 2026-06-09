@@ -13,7 +13,7 @@
   html,body{ margin:0; background:var(--bg); color:var(--ink);
     font-family:"Roboto",system-ui,sans-serif; font-weight:300; }
   body{ min-height:100vh; display:flex; flex-direction:column; align-items:center;
-    justify-content:space-between; padding:30px 18px; }
+    justify-content:space-between; padding:28px 18px; }
 
   .top{ height:18px; }
   .countdown{ font-size:.72rem; color:#bdbdbd; text-transform:uppercase; letter-spacing:.16em;
@@ -31,8 +31,9 @@
     letter-spacing:.05em; text-anchor:middle; }
 
   .bottom{ width:240px; }
-  .bottom input[type=range]{ width:100%; accent-color:rgba(0,0,0,.5); }
-  .err{ margin-top:12px; font-size:.7rem; color:#b3261e; text-align:center; min-height:1em; }
+  .bottom input[type=range]{ width:100%; accent-color:rgba(0,0,0,.5); display:block; margin:9px 0; }
+  .setname{ font-size:.64rem; color:#c2c2c2; text-transform:uppercase; letter-spacing:.18em; text-align:center; }
+  .err{ margin-top:10px; font-size:.7rem; color:#b3261e; text-align:center; min-height:1em; }
 </style>
 </head>
 <body>
@@ -48,7 +49,9 @@
   </div>
 
   <div class="bottom">
-    <input type="range" id="loop" min="0" max="1000" value="0">
+    <input type="range" id="loop" min="0" max="1000" value="0" aria-label="time window">
+    <input type="range" id="set"  min="0" max="1" step="1" value="0" aria-label="instrument set">
+    <div class="setname" id="setname">synth</div>
     <div class="err" id="err"></div>
   </div>
 
@@ -69,8 +72,16 @@ const WINDOW_HOURS = 3;
 const GAIN_EXP = 0.8;
 const ampFromPct = p => Math.pow(Math.max(p,0)/100, GAIN_EXP);
 
+/* ----- instrument SETS (extensible: add more here + a folder of <id>.wav) ----- */
+const SET_DEFS = {
+  synth:    { },                                   // built-in synth voices
+  woodwind: { dir:'samples/woodwind', ext:'wav' }, // looping samples in pages root
+};
+const SETS = ['synth','woodwind'];                 // slider left -> right
+let currentSet = 'synth';
+
 const MODES = {
-  live:  { loopMs: 10000,  label:null         },   // loopMs overridden by slider sub-position
+  live:  { loopMs: 10000,  label:null         },
   today: { loopMs: 30000,  label:'today'      },
   week:  { loopMs: 60000,  label:'this week'  },
   year:  { loopMs: 300000, label:'1 year'     },
@@ -114,18 +125,30 @@ class SynthVoice{
     const oscs=this.oscs, lfo=this.lfo;
     setTimeout(()=>{ oscs.forEach(o=>{try{o.stop()}catch(e){}}); try{lfo.stop()}catch(e){} },1000); }
 }
+/* loops a sample; on any load failure it transparently falls back to the synth voice */
+const BUFFERS = {};   // url -> AudioBuffer cache
 class SampleVoice{
-  constructor(I){ this.I=I; this.playing=false; this.buffer=null; }
-  async _load(){ if(this.buffer) return; const r=await fetch(this.I.sampleUrl); this.buffer=await ctx.decodeAudioData(await r.arrayBuffer()); }
-  async start(){ if(this.playing) return; this.playing=true; await this._load(); if(!this.playing) return;
+  constructor(I,url){ this.I=I; this.url=url; this.playing=false; this.fb=null; }
+  async start(){
+    if(this.playing) return; this.playing=true;
+    try{
+      if(!BUFFERS[this.url]){ const r=await fetch(this.url); if(!r.ok) throw 0;
+        BUFFERS[this.url]=await ctx.decodeAudioData(await r.arrayBuffer()); }
+    }catch(e){ this.fb=new SynthVoice(this.I); this.fb.start(); return; }
+    if(!this.playing) return;
     this.g=ctx.createGain(); this.g.gain.value=0; this.g.connect(master);
-    this.src=ctx.createBufferSource(); this.src.buffer=this.buffer; this.src.loop=true; this.src.connect(this.g); this.src.start(); }
-  setAmplitude(a){ if(this.playing&&this.g) this.g.gain.setTargetAtTime(a*(this.I.trim??1), ctx.currentTime, 0.08); }
-  stop(){ if(!this.playing) return; this.playing=false; if(!this.g) return; const t=ctx.currentTime;
+    this.src=ctx.createBufferSource(); this.src.buffer=BUFFERS[this.url]; this.src.loop=true;
+    this.src.connect(this.g); this.src.start();
+  }
+  setAmplitude(a){ if(this.fb) return this.fb.setAmplitude(a);
+    if(this.playing&&this.g) this.g.gain.setTargetAtTime(a*this.I.trim, ctx.currentTime, 0.08); }
+  stop(){ if(this.fb){ this.fb.stop(); this.fb=null; this.playing=false; return; }
+    if(!this.playing) return; this.playing=false; if(!this.g) return; const t=ctx.currentTime;
     this.g.gain.cancelScheduledValues(t); this.g.gain.setValueAtTime(this.g.gain.value,t);
-    this.g.gain.linearRampToValueAtTime(0,t+0.9); const src=this.src; setTimeout(()=>{try{src.stop()}catch(e){}},1000); }
+    this.g.gain.linearRampToValueAtTime(0,t+0.9); const s=this.src; setTimeout(()=>{try{s.stop()}catch(e){}},1000); }
 }
-const createVoice = I => I.sampleUrl ? new SampleVoice(I) : new SynthVoice(I);
+function makeVoice(I){ const s=SET_DEFS[currentSet];
+  return s.dir ? new SampleVoice(I, `${s.dir}/${I.id}.${s.ext}`) : new SynthVoice(I); }
 
 /* ===================== data ===================== */
 let DATA = { curves:{}, points:0 };
@@ -170,7 +193,6 @@ function amplitudeAt(id,p){ const a=DATA.curves[id]; if(!a||!a.length) return 0;
   const x=p*(a.length-1), i=Math.min(Math.floor(x),a.length-2), f=x-i, m=(1-Math.cos(f*Math.PI))/2;
   return a[i]*(1-m)+a[i+1]*m; }
 
-/* fetch by mode -------------------------------------------------- */
 let switchToken=0;
 async function loadMode(m){
   const tok=++switchToken; mode=m; loading=true; setErr('');
@@ -230,7 +252,7 @@ async function play(){
   initAudio(); if(ctx.state==='suspended') await ctx.resume();
   if(!DATA.points){ await loadMode(mode); if(!DATA.points) return; }
   soloId=null;
-  INSTRUMENTS.forEach(I=>{ const v=createVoice(I); voices[I.id]=v; v.start(); });
+  INSTRUMENTS.forEach(I=>{ const v=makeVoice(I); voices[I.id]=v; v.start(); });
   playing=true; loopStart=performance.now()-progress*loopMs;
   centerTxt.textContent='Pause';
 }
@@ -245,6 +267,16 @@ async function toggleSolo(id){
   soloId = (soloId===id) ? null : id;
 }
 document.getElementById('centerHit').addEventListener('click', togglePlay);
+
+/* switch instrument set live (rebuilds running voices) */
+function applySet(name){
+  if(name===currentSet) return; currentSet=name;
+  document.getElementById('setname').textContent=name;
+  if(playing){
+    Object.values(voices).forEach(v=>v.stop()); for(const k in voices) delete voices[k];
+    INSTRUMENTS.forEach(I=>{ const v=makeVoice(I); voices[I.id]=v; v.start(); });
+  }
+}
 
 function render(){
   const pcts={}; let total=0;
@@ -276,7 +308,7 @@ function frame(){
     progress=(performance.now()-loopStart)/loopMs;
     if(progress>=1){ progress=1;
       if(mode==='live'){ if(!loading) loadMode('live').then(()=>{ loopStart=performance.now(); progress=0; }); }
-      else { loopStart=performance.now(); progress=0; }   // loop the historical tune
+      else { loopStart=performance.now(); progress=0; }
     }
     INSTRUMENTS.forEach(I=>{
       const amp=ampFromPct(amplitudeAt(I.id, Math.min(progress,1)));
@@ -288,9 +320,9 @@ function frame(){
   requestAnimationFrame(frame);
 }
 
-/* ===================== slider (4 zones) ===================== */
+/* ===================== sliders ===================== */
 const loopSlider=document.getElementById('loop');
-const liveLoopMs = sub => Math.round(10*Math.pow(90, sub))*1000;   // sub 0..1 -> 10s..900s (15min)
+const liveLoopMs = sub => Math.round(10*Math.pow(90, sub))*1000;   // 0..1 -> 10s..15min
 loopSlider.addEventListener('input',()=>{
   const v=+loopSlider.value;
   const newMode = v<250?'live' : v<500?'today' : v<750?'week' : 'year';
@@ -298,10 +330,9 @@ loopSlider.addEventListener('input',()=>{
     if(mode!=='live') loadMode('live');
     const now=performance.now(), oldP=playing?Math.min((now-loopStart)/loopMs,1):0;
     loopMs=liveLoopMs(v/250); if(playing) loopStart=now-oldP*loopMs;
-  } else if(newMode!==mode){
-    loadMode(newMode);
-  }
+  } else if(newMode!==mode){ loadMode(newMode); }
 });
+document.getElementById('set').addEventListener('input',e=>applySet(SETS[+e.target.value] || 'synth'));
 
 /* go */
 loadMode('live');
