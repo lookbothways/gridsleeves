@@ -50,7 +50,7 @@
 
   <div class="bottom">
     <input type="range" id="loop" min="0" max="1000" value="500" aria-label="time window">
-    <input type="range" id="set"  min="0" max="1" step="1" value="0" aria-label="instrument set">
+    <input type="range" id="set"  min="0" max="2" step="1" value="0" aria-label="instrument set">
     <div class="setname" id="setname">synth</div>
     <div class="err" id="err"></div>
   </div>
@@ -76,8 +76,9 @@ const ampFromPct = p => Math.pow(Math.max(p,0)/100, GAIN_EXP);
 const SET_DEFS = {
   synth:    { },                                   // built-in synth voices
   woodwind: { dir:'samples/woodwind', ext:'wav' }, // looping samples in pages root
+  strings:  { dir:'samples/strings',  ext:'wav' }, // looping samples in pages root
 };
-const SETS = ['synth','woodwind'];                 // slider left -> right
+const SETS = ['synth','woodwind','strings'];        // slider left -> right
 let currentSet = 'synth';
 
 const MODES = {
@@ -127,19 +128,31 @@ class SynthVoice{
     setTimeout(()=>{ oscs.forEach(o=>{try{o.stop()}catch(e){}}); try{lfo.stop()}catch(e){} },1000); }
 }
 /* loops a sample; on any load failure it transparently falls back to the synth voice */
-const BUFFERS = {};   // url -> AudioBuffer cache
+const BUFFERS = {};   // url -> AudioBuffer cache (loop-crossfaded)
+/* equal-power crossfade of the tail into the head, then trim the tail -> click-free loop */
+function makeLoopable(buf, fadeSec=0.25){
+  const n=buf.length, sr=buf.sampleRate, f=Math.min(Math.floor(fadeSec*sr), Math.floor(n/2));
+  const out=ctx.createBuffer(buf.numberOfChannels, n-f, sr);
+  for(let c=0;c<buf.numberOfChannels;c++){
+    const d=buf.getChannelData(c), o=out.getChannelData(c);
+    o.set(d.subarray(0,n-f));
+    for(let i=0;i<f;i++){ const t=i/f;
+      o[i]=o[i]*Math.sqrt(t)+d[n-f+i]*Math.sqrt(1-t); }
+  }
+  return out;
+}
 class SampleVoice{
-  constructor(I,url){ this.I=I; this.url=url; this.playing=false; this.fb=null; }
+  constructor(I,url,offset){ this.I=I; this.url=url; this.offset=offset||0; this.playing=false; this.fb=null; }
   async start(){
     if(this.playing) return; this.playing=true;
     try{
       if(!BUFFERS[this.url]){ const r=await fetch(this.url); if(!r.ok) throw 0;
-        BUFFERS[this.url]=await ctx.decodeAudioData(await r.arrayBuffer()); }
+        BUFFERS[this.url]=makeLoopable(await ctx.decodeAudioData(await r.arrayBuffer())); }
     }catch(e){ this.fb=new SynthVoice(this.I); this.fb.start(); return; }
     if(!this.playing) return;
     this.g=ctx.createGain(); this.g.gain.value=0; this.g.connect(master);
     this.src=ctx.createBufferSource(); this.src.buffer=BUFFERS[this.url]; this.src.loop=true;
-    this.src.connect(this.g); this.src.start();
+    this.src.connect(this.g); this.src.start(0, this.offset % this.src.buffer.duration);
   }
   setAmplitude(a){ if(this.fb) return this.fb.setAmplitude(a);
     if(this.playing&&this.g) this.g.gain.setTargetAtTime(a*this.I.trim, ctx.currentTime, 0.08); }
@@ -149,7 +162,8 @@ class SampleVoice{
     this.g.gain.linearRampToValueAtTime(0,t+0.9); const s=this.src; setTimeout(()=>{try{s.stop()}catch(e){}},1000); }
 }
 function makeVoice(I){ const s=SET_DEFS[currentSet];
-  return s.dir ? new SampleVoice(I, `${s.dir}/${I.id}.${s.ext}`) : new SynthVoice(I); }
+  const idx=INSTRUMENTS.findIndex(x=>x.id===I.id);
+  return s.dir ? new SampleVoice(I, `${s.dir}/${I.id}.${s.ext}`, idx*1.0) : new SynthVoice(I); }
 
 /* ===================== data ===================== */
 let DATA = { curves:{}, points:0 };
