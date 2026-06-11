@@ -248,12 +248,12 @@ function ensBeatFn(){
   if(ensBeat%ENSEMBLE.chordEvery===0){
     ENSEMBLE.left.forEach(id=>{
       if(soloId&&soloId!==id) return;
-      const {midi,p}=ensNote(id); ensHit('piano', midi, 0.5*ampFromPct(p), hum(), FUEL_COLOR[id]);
+      const {midi,p}=ensNote(id); ensHit('piano', midi, 1.8*ampFromPct(p), hum(), FUEL_COLOR[id]);
     });
   }
   const rid=ENSEMBLE.right[ensBeat%ENSEMBLE.right.length];
   if(!(soloId&&soloId!==rid)){
-    const {midi,p}=ensNote(rid); ensHit('harp', midi, 0.6*ampFromPct(p), hum(), FUEL_COLOR[rid]);
+    const {midi,p}=ensNote(rid); ensHit('harp', midi, 2.2*ampFromPct(p), hum(), FUEL_COLOR[rid]);
   }
   ensBeat++;
 }
