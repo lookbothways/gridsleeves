@@ -96,7 +96,6 @@ const SET_DEFS = {
 };
 const SETS = ['synth','woodwind','strings','french_horn','organ','ensemble']; // slider left -> right
 let currentSet = 'ensemble';
-ENSEMBLE.bpm = 150;
 
 const MODES = {
   live:  { loopMs: 10000,  label:null         },
@@ -188,7 +187,7 @@ function makeVoice(I){ const s=SET_DEFS[currentSet];
    piano chord re-struck each bar; right hand (biomass/wind/solar/gas) =
    harp notes cycling on the beats. Note gain follows the fuel's %.      */
 const ENSEMBLE = {
-  bpm: 60, chordEvery: 4, pctSpan: 50,   // 0..50% sweeps a full zone
+  bpm: 150, chordEvery: 4, pctSpan: 50,  // 0..50% sweeps a full zone
   zones: {                                // pentatonic MIDI notes per fuel
     nuclear:[24,26,28,31,33,36,38,40],    // C1..E2
     coal:   [31,33,36,38,40,43,45],       // G1..A2
