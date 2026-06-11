@@ -50,7 +50,7 @@
 
   <div class="bottom">
     <input type="range" id="loop" min="0" max="1000" value="500" aria-label="time window">
-    <input type="range" id="set"  min="0" max="2" step="1" value="0" aria-label="instrument set">
+    <input type="range" id="set"  min="0" max="5" step="1" value="0" aria-label="instrument set">
     <div class="setname" id="setname">synth</div>
     <div class="err" id="err"></div>
   </div>
@@ -74,11 +74,14 @@ const ampFromPct = p => Math.pow(Math.max(p,0)/100, GAIN_EXP);
 
 /* ----- instrument SETS (extensible: add more here + a folder of <id>.wav) ----- */
 const SET_DEFS = {
-  synth:    { },                                   // built-in synth voices
-  woodwind: { dir:'samples/woodwind', ext:'wav' }, // looping samples in pages root
-  strings:  { dir:'samples/strings',  ext:'wav' }, // looping samples in pages root
+  synth:       { },                                      // built-in synth voices
+  woodwind:    { dir:'samples/woodwind',    ext:'wav' }, // looping samples in pages root
+  strings:     { dir:'samples/strings',     ext:'wav' },
+  french_horn: { dir:'samples/french_horn', ext:'wav' },
+  organ:       { dir:'samples/organ',       ext:'wav' },
+  ensemble:    { ensemble:true },                        // piano/harp note engine (see below)
 };
-const SETS = ['synth','woodwind','strings'];        // slider left -> right
+const SETS = ['synth','woodwind','strings','french_horn','organ','ensemble']; // slider left -> right
 let currentSet = 'synth';
 
 const MODES = {
@@ -164,6 +167,75 @@ class SampleVoice{
 function makeVoice(I){ const s=SET_DEFS[currentSet];
   const idx=INSTRUMENTS.findIndex(x=>x.id===I.id);
   return s.dir ? new SampleVoice(I, `${s.dir}/${I.id}.${s.ext}`, idx*1.0) : new SynthVoice(I); }
+
+/* ===================== ensemble mode =====================
+   Each fuel's % steers a note inside its own register zone, quantized to
+   C major pentatonic (always consonant). Left hand (nuclear/coal/hydro) =
+   piano chord re-struck each bar; right hand (biomass/wind/solar/gas) =
+   harp notes cycling on the beats. Note gain follows the fuel's %.      */
+const ENSEMBLE = {
+  bpm: 60, chordEvery: 4, pctSpan: 50,   // 0..50% sweeps a full zone
+  zones: {                                // pentatonic MIDI notes per fuel
+    nuclear:[24,26,28,31,33,36,38,40],    // C1..E2
+    coal:   [31,33,36,38,40,43,45],       // G1..A2
+    hydro:  [36,38,40,43,45,48,50,52],    // C2..E3
+    biomass:[48,50,52,55,57,60,62,64],    // C3..E4
+    wind:   [55,57,60,62,64,67,69],       // G3..A4
+    solar:  [60,62,64,67,69,72,74,76],    // C4..E5
+    gas:    [67,69,72,74,76,79,81],       // G4..A5
+  },
+  left:['nuclear','coal','hydro'], right:['biomass','wind','solar','gas'],
+};
+const NOTE_NAMES=['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
+const midiName = m => NOTE_NAMES[m%12]+(Math.floor(m/12)-1);
+const ENS_DIRS = { piano:'samples/ensemble/piano', harp:'samples/ensemble/harp' };
+const ENS_BUFFERS = {}; let ensLoaded=false, ensTimer=null, ensBeat=0;
+
+async function ensLoad(){
+  if(ensLoaded) return;
+  const jobs=[];
+  ENSEMBLE.left.forEach(id=>ENSEMBLE.zones[id].forEach(m=>jobs.push(['piano',m])));
+  ENSEMBLE.right.forEach(id=>ENSEMBLE.zones[id].forEach(m=>jobs.push(['harp',m])));
+  await Promise.all(jobs.map(async ([inst,m])=>{
+    const k=inst+':'+m; if(ENS_BUFFERS[k]) return;
+    try{ const r=await fetch(`${ENS_DIRS[inst]}/${midiName(m)}.mp3`); if(!r.ok) throw 0;
+      ENS_BUFFERS[k]=await ctx.decodeAudioData(await r.arrayBuffer()); }
+    catch(e){ setErr('ensemble sample missing: '+midiName(m)); }
+  }));
+  ensLoaded=true;
+}
+function ensNote(id){
+  const p=amplitudeAt(id, Math.min(progress,1));
+  const z=ENSEMBLE.zones[id], t=Math.min(Math.max(p,0),ENSEMBLE.pctSpan)/ENSEMBLE.pctSpan;
+  return { midi:z[Math.round(t*(z.length-1))], p };
+}
+function ensHit(inst, midi, gain, when){
+  const buf=ENS_BUFFERS[inst+':'+midi]; if(!buf||gain<=0.003) return;
+  const g=ctx.createGain(); g.gain.value=gain; g.connect(master);
+  const s=ctx.createBufferSource(); s.buffer=buf; s.connect(g); s.start(when);
+}
+function ensBeatFn(){
+  if(!playing||currentSet!=='ensemble') return;
+  const t=ctx.currentTime+0.05, hum=()=>t+Math.random()*0.03;
+  if(ensBeat%ENSEMBLE.chordEvery===0){
+    ENSEMBLE.left.forEach(id=>{
+      if(soloId&&soloId!==id) return;
+      const {midi,p}=ensNote(id); ensHit('piano', midi, 0.5*ampFromPct(p), hum());
+    });
+  }
+  const rid=ENSEMBLE.right[ensBeat%ENSEMBLE.right.length];
+  if(!(soloId&&soloId!==rid)){
+    const {midi,p}=ensNote(rid); ensHit('harp', midi, 0.6*ampFromPct(p), hum());
+  }
+  ensBeat++;
+}
+function ensStart(){
+  ensBeat=0;
+  ensLoad().then(()=>{ if(!playing||currentSet!=='ensemble') return;
+    clearInterval(ensTimer); ensBeatFn();
+    ensTimer=setInterval(ensBeatFn, 60000/ENSEMBLE.bpm); });
+}
+function ensStop(){ clearInterval(ensTimer); ensTimer=null; }
 
 /* ===================== data ===================== */
 let DATA = { curves:{}, points:0 };
@@ -272,12 +344,13 @@ async function play(){
   initAudio(); if(ctx.state==='suspended') await ctx.resume();
   if(!DATA.points){ await loadMode(mode); if(!DATA.points) return; }
   soloId=null;
-  INSTRUMENTS.forEach(I=>{ const v=makeVoice(I); voices[I.id]=v; v.start(); });
   playing=true; loopStart=performance.now()-progress*loopMs;
+  if(currentSet==='ensemble') ensStart();
+  else INSTRUMENTS.forEach(I=>{ const v=makeVoice(I); voices[I.id]=v; v.start(); });
   centerTxt.textContent='Pause';
 }
 function stop(){
-  playing=false; soloId=null;
+  playing=false; soloId=null; ensStop();
   Object.values(voices).forEach(v=>v.stop()); for(const k in voices) delete voices[k];
   centerTxt.textContent='Play sound';
 }
@@ -291,10 +364,12 @@ document.getElementById('centerHit').addEventListener('click', togglePlay);
 /* switch instrument set live (rebuilds running voices) */
 function applySet(name){
   if(name===currentSet) return; currentSet=name;
-  document.getElementById('setname').textContent=name;
+  document.getElementById('setname').textContent=name.replace(/_/g,' ');
   if(playing){
+    ensStop();
     Object.values(voices).forEach(v=>v.stop()); for(const k in voices) delete voices[k];
-    INSTRUMENTS.forEach(I=>{ const v=makeVoice(I); voices[I.id]=v; v.start(); });
+    if(name==='ensemble') ensStart();
+    else INSTRUMENTS.forEach(I=>{ const v=makeVoice(I); voices[I.id]=v; v.start(); });
   }
 }
 
