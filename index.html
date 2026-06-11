@@ -59,11 +59,15 @@
 
   <div class="bottom">
     <input type="range" id="loop" min="0" max="1000" value="500" aria-label="time window">
-    <input type="range" id="set"  min="0" max="5" step="1" value="5" aria-label="instrument set">
+    <input type="range" id="set"  min="0" max="6" step="1" value="6" aria-label="instrument set">
     <div class="setname" id="setname">synth</div>
     <div id="tempoWrap" style="display:none">
       <input type="range" id="tempo" min="10" max="240" step="1" value="150" aria-label="tempo">
       <div class="setname" id="tempoLbl">tempo 150</div>
+    </div>
+    <div id="noiseWrap" style="display:none">
+      <input type="range" id="noiseTone" min="0" max="100" step="1" value="35" aria-label="noise tone">
+      <div class="setname">noise tone &middot; low &harr; high</div>
     </div>
     <div class="err" id="err"></div>
   </div>
@@ -87,6 +91,7 @@ const ampFromPct = p => Math.pow(Math.max(p,0)/100, GAIN_EXP);
 
 /* ----- instrument SETS (extensible: add more here + a folder of <id>.wav) ----- */
 const SET_DEFS = {
+  white_noise: { noise:true },                           // synthesized, no files needed
   synth:       { },                                      // built-in synth voices
   woodwind:    { dir:'samples/woodwind',    ext:'wav' }, // looping samples in pages root
   strings:     { dir:'samples/strings',     ext:'wav' },
@@ -94,7 +99,7 @@ const SET_DEFS = {
   organ:       { dir:'samples/organ',       ext:'wav' },
   ensemble:    { ensemble:true },                        // piano/harp note engine (see below)
 };
-const SETS = ['synth','woodwind','strings','french_horn','organ','ensemble']; // slider left -> right
+const SETS = ['white_noise','synth','woodwind','strings','french_horn','organ','ensemble']; // slider left -> right
 let currentSet = 'ensemble';
 
 const MODES = {
@@ -124,24 +129,114 @@ function makeImpulse(sec,decay){
     for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,decay); }
   return buf;
 }
+/* ===================== white noise set =====================
+   Per-fuel colored noise, synthesized (no sample files needed).
+   Low-register fuels get darker rumble; wind and gas - the prevalent
+   fuels - get the two noises people sleep to: green (mid-band pink,
+   like distant wind/surf) and classic pink. All voices are lowpass-
+   capped to avoid shrillness. The "noise tone" slider biases both
+   filter cutoffs and the low-vs-high fuel balance.                  */
+const NOISE_DEFS = {
+  nuclear:{base:'brown', f:250,  type:'lowpass'},   // deep rumble
+  coal:   {base:'brown', f:450,  type:'lowpass'},
+  hydro:  {base:'pink',  f:800,  type:'lowpass'},
+  biomass:{base:'pink',  f:1500, type:'lowpass'},
+  wind:   {base:'pink',  f:500,  type:'bandpass'},  // "green" noise: distant wind
+  solar:  {base:'white', f:2800, type:'lowpass'},   // soft hiss, capped
+  gas:    {base:'pink',  f:2000, type:'lowpass'},   // classic sleep pink
+};
+let noiseBias = 0.35;                               // 0 = low end, 1 = high end
+const NOISE_CUT_MAX = 4000;                         // hard shrillness ceiling
+function biasCut(f){ return Math.min(NOISE_CUT_MAX, f*(0.45+1.3*noiseBias)); }
+function biasTilt(id){                              // loudness tilt low<->high fuels
+  const i=INSTRUMENTS.findIndex(x=>x.id===id), t=(i/(INSTRUMENTS.length-1))*2-1;
+  return Math.max(0.05, 1+(1-2*noiseBias)*(-t)*0.8);
+}
+const NOISE_BUFS = {};
+function noiseBuffer(type){
+  if(NOISE_BUFS[type]) return NOISE_BUFS[type];
+  const n=4*ctx.sampleRate, buf=ctx.createBuffer(1,n,ctx.sampleRate), d=buf.getChannelData(0);
+  if(type==='white'){ for(let i=0;i<n;i++) d[i]=Math.random()*2-1; }
+  else if(type==='pink'){ let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
+    for(let i=0;i<n;i++){ const w=Math.random()*2-1;
+      b0=0.99886*b0+w*0.0555179; b1=0.99332*b1+w*0.0750759; b2=0.96900*b2+w*0.1538520;
+      b3=0.86650*b3+w*0.3104856; b4=0.55000*b4+w*0.5329522; b5=-0.7616*b5-w*0.0168980;
+      d[i]=b0+b1+b2+b3+b4+b5+b6+w*0.5362; b6=w*0.115926; } }
+  else { let last=0;                                 // brown: leaky random walk
+    for(let i=0;i<n;i++){ const w=Math.random()*2-1; last=(last+0.02*w)/1.02; d[i]=last*3.5; } }
+  let pk=0; for(let i=0;i<n;i++){ const a=Math.abs(d[i]); if(a>pk) pk=a; }
+  if(pk>0){ const k=NORM_PEAK/pk; for(let i=0;i<n;i++) d[i]*=k; }
+  NOISE_BUFS[type]=buf; return buf;
+}
+class NoiseVoice{
+  constructor(I){ this.I=I; this.playing=false; this.amp=0; }
+  start(){ if(this.playing) return; this.playing=true;
+    const def=NOISE_DEFS[this.I.id];
+    this.g=ctx.createGain(); this.g.gain.value=0; panTo(this.g, this.I.id);
+    this.flt=ctx.createBiquadFilter(); this.flt.type=def.type;
+    this.flt.frequency.value=biasCut(def.f); this.flt.Q.value=def.type==='bandpass'?0.7:0.5;
+    this.flt.connect(this.g);
+    this.src=ctx.createBufferSource(); this.src.buffer=noiseBuffer(def.base); this.src.loop=true;
+    this.src.connect(this.flt); this.src.start(0, Math.random()*3); }
+  setAmplitude(a){ this.amp=a; if(this.playing)
+    this.g.gain.setTargetAtTime(a*this.I.trim*biasTilt(this.I.id), ctx.currentTime, 0.12); }
+  setBias(){ if(this.playing)
+    this.flt.frequency.setTargetAtTime(biasCut(NOISE_DEFS[this.I.id].f), ctx.currentTime, 0.1); }
+  stop(){ if(!this.playing) return; this.playing=false; const t=ctx.currentTime;
+    this.g.gain.cancelScheduledValues(t); this.g.gain.setValueAtTime(this.g.gain.value,t);
+    this.g.gain.linearRampToValueAtTime(0,t+0.9);
+    const s=this.src; setTimeout(()=>{ try{s.stop()}catch(e){} },1000); }
+}
+
+/* 3 detuned oscillators sum well above 1.0; this brings the synth set
+   in line with the normalized sample sets (NORM_PEAK below) */
+const SYNTH_LEVEL = 0.32;
 class SynthVoice{
   constructor(I){ this.I=I; this.playing=false; }
   start(){ if(this.playing) return; this.playing=true; const I=this.I;
     this.g=ctx.createGain(); this.g.gain.value=0;
     this.flt=ctx.createBiquadFilter(); this.flt.type='lowpass';
     this.flt.frequency.value=I.freq*I.cutoff; this.flt.Q.value=0.6;
-    this.flt.connect(this.g).connect(master);
+    this.flt.connect(this.g); panTo(this.g, I.id);
     this.oscs=[]; [-6,0,6].forEach(det=>{ const o=ctx.createOscillator();
       o.type=I.wave; o.frequency.value=I.freq; o.detune.value=det; o.connect(this.flt); o.start(); this.oscs.push(o); });
     this.lfo=ctx.createOscillator(); this.lfo.frequency.value=I.vibRate;
     this.lfoG=ctx.createGain(); this.lfoG.gain.value=I.vibDepth;
     this.lfo.connect(this.lfoG); this.oscs.forEach(o=>this.lfoG.connect(o.detune)); this.lfo.start(); }
-  setAmplitude(a){ if(this.playing) this.g.gain.setTargetAtTime(a*this.I.trim, ctx.currentTime, 0.08); }
+  setAmplitude(a){ if(this.playing) this.g.gain.setTargetAtTime(a*this.I.trim*SYNTH_LEVEL, ctx.currentTime, 0.08); }
   stop(){ if(!this.playing) return; this.playing=false; const t=ctx.currentTime;
     this.g.gain.cancelScheduledValues(t); this.g.gain.setValueAtTime(this.g.gain.value,t);
     this.g.gain.linearRampToValueAtTime(0,t+0.9);
     const oscs=this.oscs, lfo=this.lfo;
     setTimeout(()=>{ oscs.forEach(o=>{try{o.stop()}catch(e){}}); try{lfo.stop()}catch(e){} },1000); }
+}
+/* normalize a decoded buffer to a common peak so every sample set
+   (woodwind, strings, horn, organ, ensemble) sits at the same level
+   regardless of how hot its source files were rendered */
+const NORM_PEAK = 0.9;
+function normalizeBuffer(buf){
+  let peak=0;
+  for(let c=0;c<buf.numberOfChannels;c++){
+    const d=buf.getChannelData(c);
+    for(let i=0;i<d.length;i++){ const a=Math.abs(d[i]); if(a>peak) peak=a; }
+  }
+  if(peak>0.0001){ const k=NORM_PEAK/peak;
+    for(let c=0;c<buf.numberOfChannels;c++){
+      const d=buf.getChannelData(c);
+      for(let i=0;i<d.length;i++) d[i]*=k;
+    }
+  }
+  return buf;
+}
+/* drone stereo: 7 fuels spread evenly hard-left (nuclear) to hard-right (gas) */
+function fuelPan(id){
+  const i=INSTRUMENTS.findIndex(x=>x.id===id);
+  return (i/(INSTRUMENTS.length-1))*2-1;
+}
+function panTo(g, id){           // insert a panner between a gain node and master
+  if(!ctx.createStereoPanner){ g.connect(master); return; }
+  const p=ctx.createStereoPanner(); p.pan.value=fuelPan(id);
+  g.connect(p); p.connect(master);
 }
 /* loops a sample; on any load failure it transparently falls back to the synth voice */
 const BUFFERS = {};   // url -> AudioBuffer cache (loop-crossfaded)
@@ -163,10 +258,10 @@ class SampleVoice{
     if(this.playing) return; this.playing=true;
     try{
       if(!BUFFERS[this.url]){ const r=await fetch(this.url); if(!r.ok) throw 0;
-        BUFFERS[this.url]=makeLoopable(await ctx.decodeAudioData(await r.arrayBuffer())); }
+        BUFFERS[this.url]=makeLoopable(normalizeBuffer(await ctx.decodeAudioData(await r.arrayBuffer()))); }
     }catch(e){ this.fb=new SynthVoice(this.I); this.fb.start(); return; }
     if(!this.playing) return;
-    this.g=ctx.createGain(); this.g.gain.value=0; this.g.connect(master);
+    this.g=ctx.createGain(); this.g.gain.value=0; panTo(this.g, this.I.id);
     this.src=ctx.createBufferSource(); this.src.buffer=BUFFERS[this.url]; this.src.loop=true;
     this.src.connect(this.g); this.src.start(0, this.offset % this.src.buffer.duration);
   }
@@ -178,6 +273,7 @@ class SampleVoice{
     this.g.gain.linearRampToValueAtTime(0,t+0.9); const s=this.src; setTimeout(()=>{try{s.stop()}catch(e){}},1000); }
 }
 function makeVoice(I){ const s=SET_DEFS[currentSet];
+  if(s.noise) return new NoiseVoice(I);
   const idx=INSTRUMENTS.findIndex(x=>x.id===I.id);
   return s.dir ? new SampleVoice(I, `${s.dir}/${I.id}.${s.ext}`, idx*1.0) : new SynthVoice(I); }
 
@@ -212,7 +308,7 @@ async function ensLoad(){
   await Promise.all(jobs.map(async ([inst,m])=>{
     const k=inst+':'+m; if(ENS_BUFFERS[k]) return;
     try{ const r=await fetch(`${ENS_DIRS[inst]}/${midiName(m)}.mp3`); if(!r.ok) throw 0;
-      ENS_BUFFERS[k]=await ctx.decodeAudioData(await r.arrayBuffer()); }
+      ENS_BUFFERS[k]=normalizeBuffer(await ctx.decodeAudioData(await r.arrayBuffer())); }
     catch(e){ setErr('ensemble sample missing: '+midiName(m)); }
   }));
   ensLoaded=true;
@@ -236,9 +332,20 @@ function noteDot(midi, color){
   dotsEl.appendChild(d);
   setTimeout(()=>d.remove(), DOT_FADE_MS+60);
 }
+/* pitch -> stereo position: lowest playable note hard left, highest hard right */
+const PAN_LO_MIDI=24, PAN_HI_MIDI=81;   // C1 .. A5, the extremes of the fuel zones
+function pitchPan(midi){
+  return Math.max(-1, Math.min(1, (midi-PAN_LO_MIDI)/(PAN_HI_MIDI-PAN_LO_MIDI)*2-1));
+}
 function ensHit(inst, midi, gain, when, color){
   const buf=ENS_BUFFERS[inst+':'+midi]; if(!buf||gain<=0.003) return;
-  const g=ctx.createGain(); g.gain.value=gain; g.connect(master);
+  const g=ctx.createGain(); g.gain.value=gain;
+  let tail=g;
+  if(ctx.createStereoPanner){
+    const p=ctx.createStereoPanner(); p.pan.value=pitchPan(midi);
+    g.connect(p); tail=p;
+  }
+  tail.connect(master);
   const s=ctx.createBufferSource(); s.buffer=buf; s.connect(g); s.start(when);
   if(color) noteDot(midi, color);
 }
@@ -248,12 +355,12 @@ function ensBeatFn(){
   if(ensBeat%ENSEMBLE.chordEvery===0){
     ENSEMBLE.left.forEach(id=>{
       if(soloId&&soloId!==id) return;
-      const {midi,p}=ensNote(id); ensHit('piano', midi, 1.8*ampFromPct(p), hum(), FUEL_COLOR[id]);
+      const {midi,p}=ensNote(id); ensHit('piano', midi, 0.22*ampFromPct(p), hum(), FUEL_COLOR[id]);
     });
   }
   const rid=ENSEMBLE.right[ensBeat%ENSEMBLE.right.length];
   if(!(soloId&&soloId!==rid)){
-    const {midi,p}=ensNote(rid); ensHit('harp', midi, 2.2*ampFromPct(p), hum(), FUEL_COLOR[rid]);
+    const {midi,p}=ensNote(rid); ensHit('harp', midi, 0.26*ampFromPct(p), hum(), FUEL_COLOR[rid]);
   }
   ensBeat++;
 }
@@ -397,6 +504,7 @@ function applySet(name){
   if(name===currentSet) return; currentSet=name;
   document.getElementById('setname').textContent=name.replace(/_/g,' ');
   document.getElementById('tempoWrap').style.display = name==='ensemble' ? '' : 'none';
+  document.getElementById('noiseWrap').style.display = name==='white_noise' ? '' : 'none';
   if(playing){
     ensStop();
     Object.values(voices).forEach(v=>v.stop()); for(const k in voices) delete voices[k];
@@ -459,6 +567,10 @@ document.getElementById('tempo').addEventListener('input',e=>{
   ENSEMBLE.bpm=+e.target.value;
   document.getElementById('tempoLbl').textContent='tempo '+ENSEMBLE.bpm;
   if(playing && currentSet==='ensemble' && ensTimer) ensSetTimer();
+});
+document.getElementById('noiseTone').addEventListener('input',e=>{
+  noiseBias=+e.target.value/100;
+  Object.values(voices).forEach(v=>{ if(v.setBias) v.setBias(); });
 });
 
 /* go */
