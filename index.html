@@ -59,11 +59,11 @@
 
   <div class="bottom">
     <input type="range" id="loop" min="0" max="1000" value="500" aria-label="time window">
-    <input type="range" id="set"  min="0" max="5" step="1" value="0" aria-label="instrument set">
+    <input type="range" id="set"  min="0" max="5" step="1" value="5" aria-label="instrument set">
     <div class="setname" id="setname">synth</div>
     <div id="tempoWrap" style="display:none">
-      <input type="range" id="tempo" min="10" max="240" step="1" value="60" aria-label="tempo">
-      <div class="setname" id="tempoLbl">tempo 60</div>
+      <input type="range" id="tempo" min="10" max="240" step="1" value="150" aria-label="tempo">
+      <div class="setname" id="tempoLbl">tempo 150</div>
     </div>
     <div class="err" id="err"></div>
   </div>
@@ -95,7 +95,8 @@ const SET_DEFS = {
   ensemble:    { ensemble:true },                        // piano/harp note engine (see below)
 };
 const SETS = ['synth','woodwind','strings','french_horn','organ','ensemble']; // slider left -> right
-let currentSet = 'synth';
+let currentSet = 'ensemble';
+ENSEMBLE.bpm = 150;
 
 const MODES = {
   live:  { loopMs: 10000,  label:null         },
@@ -462,6 +463,8 @@ document.getElementById('tempo').addEventListener('input',e=>{
 });
 
 /* go */
+document.getElementById('setname').textContent = 'ensemble';
+document.getElementById('tempoWrap').style.display = '';
 loadMode('week').then(()=>{ loopStart=performance.now(); progress=0; });
 requestAnimationFrame(frame);
 </script>
